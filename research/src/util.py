@@ -8,15 +8,17 @@ def gaussian_weights(x, x_i, h):
     return np.exp(pow)
 
 
-def calc_s(x: np.array, y: np.array, h):
+def calc_s(xs: np.array, x: float, y: np.array, h):
     s = 0.
 
-    for i in range(len(x)):
+    for j in range(len(xs)):
         w = 0.
-        for j in range(len(x)):
-            w += gaussian_weights(x, x[j], h)
-        w = gaussian_weights(x, x[i], h) / w
-        s += y[i] * w
+
+        for i in range(len(xs)):
+            w += gaussian_weights(x, xs[i], h)
+        w = gaussian_weights(x, xs[j], h) / w
+        s += y[j] * w
+
     return s
 
 
@@ -36,8 +38,7 @@ def shepard_kernel(x, y, delta):
     # TODO: efficiency
     for z in range(len(x)):
         indices = find_close(x, z, delta)
-        print(indices)
-        s = calc_s(x[indices], y[indices], h)
+        s = calc_s(x[indices], x[z], y[indices], h)
         kernel[z] = s
 
     return kernel
