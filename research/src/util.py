@@ -1,148 +1,10 @@
 import time
-
 import numpy as np
+from SatteliteLidar.error_utils import rmse, Error
 from matplotlib import pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-from sklearn.preprocessing import PolynomialFeatures
-from numba import njit
 
-
-@njit
-def gaussian_weights(x, x_i, h):
-    norm = np.linalg.norm(x - x_i)
-    pow = -np.power(norm / h, 2)
-    return np.exp(pow)
-
-
-def gaussian_weights_vec(xs, x_i, h):
-    if len(xs.shape) == 1:
-        xs = np.atleast_2d(xs).T
-    diff = np.subtract(xs, x_i)
-    norm = np.linalg.norm(diff, axis=-1)
-    return np.exp(-np.power(norm / h, 2))
-
-
-def calc_s(xs: np.array, x: float, y: np.array, h):
-    s = 0.
-
-    gaussian_weights = gaussian_weights_vec(xs, x, h)
-    gaussian_sum = np.sum(gaussian_weights)
-
-    for j in range(len(xs)):
-        w = gaussian_sum
-
-        w = gaussian_weights[j] / w
-        s += y[j] * w
-
-    return s
-
-
-def find_close(x_vec, x_val, delta):
-    if len(x_vec.shape) == 1:
-        x_vec = np.atleast_2d(x_vec)
-        diff = np.subtract(x_vec, x_val)
-        distances = np.linalg.norm(diff, axis=0)
-    else:
-        diff = np.subtract(x_vec, x_val)
-        distances = np.linalg.norm(diff, axis=1)
-
-    indices = np.where(distances < delta)[0]
-    return indices
-
-
-@njit
-def find_close_fast(x_vec, x_val, delta):
-    # If x_vec is 1D, treat it as a single row (and x_val is assumed to be scalar)
-    if x_vec.ndim == 1:
-        n = x_vec.shape[0]
-        count = 0
-        # First pass: count indices where |x_vec[i] - x_val| < delta.
-        for i in range(n):
-            diff = x_vec[i] - x_val
-            if diff < 0:
-                diff = -diff
-            if diff < delta:
-                count += 1
-        result = np.empty(count, np.int64)
-        idx = 0
-        # Second pass: store qualifying indices.
-        for i in range(n):
-            diff = x_vec[i] - x_val
-            if diff < 0:
-                diff = -diff
-            if diff < delta:
-                result[idx] = i
-                idx += 1
-        return result
-    else:
-        delta_sqr = delta ** 2
-        # For 2D x_vec, compute the Euclidean norm for each row.
-        m = x_vec.shape[0]
-        n = x_vec.shape[1]
-
-        l = []
-
-        # Second pass: store qualifying row indices.
-        for i in range(m):
-            s = 0.0
-            for j in range(n):
-                diff = x_vec[i, j] - x_val[j]
-                s += diff * diff
-            if s < delta_sqr:
-                l.append(i)
-
-        return np.array(l)
-
-
-def shepard_kernel(x, y, delta, x_eval=None):
-    if x_eval is None:
-        x_eval = x
-
-    kernel = np.empty(x_eval.shape[:1])
-
-    h = len(x)
-
-    # TODO: efficiency
-    for z in range(len(x_eval)):
-        indices = find_close_fast(x, x_eval[z], delta)
-        s = calc_s(x[indices], x_eval[z], y[indices], h)
-        kernel[z] = s
-
-    return kernel
-
-
-def moving_least_squares(all_xs: np.array, all_ys: np.array, m=0, delta: float = 1,
-                         x_eval: np.array = None) -> np.array:
-    if len(all_xs.shape) == 1:
-        all_xs = np.atleast_2d(all_xs).T
-
-    if x_eval is None:
-        x_eval = all_xs
-
-    if m == 0:
-        return shepard_kernel(all_xs, all_ys, delta, x_eval)
-    kernel = np.empty(x_eval.shape[:1])
-
-    h = len(all_xs)
-    poly = PolynomialFeatures(degree=m)
-    poly.fit_transform(x_eval[0].reshape(1, x_eval.shape[1]))
-
-    for z in range(len(x_eval)):
-        indices = find_close_fast(all_xs, x_eval[z], delta)
-
-        xs, ys = all_xs[indices], all_ys[indices]
-        gaussian_weights = gaussian_weights_vec(xs, x_eval[z], h)
-        D = np.diag(gaussian_weights)
-
-        P = poly.transform(xs)
-
-        b = ys.T @ D @ P @ np.linalg.inv(P.T @ D @ P)
-
-        s = poly.transform(x_eval[z].reshape(1, x_eval.shape[1])) * b
-        value = np.sum(s)
-        kernel[z] = value
-
-    return kernel
+from SatteliteLidar.research.src.mls import moving_least_squares
+from SatteliteLidar.timer import Timer
 
 
 def get_sine_data_2d(n, line, dev, bias: float = 0.):
@@ -150,39 +12,179 @@ def get_sine_data_2d(n, line, dev, bias: float = 0.):
     base = np.linspace(start, end, n)
     X, Y = np.meshgrid(base, base)
     Z = np.sin(X * Y / (2 * np.pi))
-    Z = Z + np.random.normal(bias, scale=dev, size=Z.shape)
+    noise = np.random.normal(bias, scale=dev, size=Z.shape)
+    Z = Z + noise
     return X, Y, Z
 
 
-def basic_experiment(n, m):
-    line = (0, 2 * np.pi)
+class MLSResult:
+    def __init__(self):
+        self.time = None
+        self.error = None
 
-    delta = 1
-    extended_line = (line[0] - 2 * delta, line[1] + 2 * delta)
+
+class Experiment:
+    def __init__(self):
+        self.result_i = None
+        self.result_plus = None
+        self.result_union = None
+
+        self.n = None
+        self.m = None
+        self.delta = None
+        self.base_function = None
+
+
+class AggregatedExperiment:
+    def __init__(self):
+        self.results_i = []
+        self.results_plus = []
+        self.results_union = []
+        self.base_function = None
+        self.m = None
+        self.n = None
+        self.delta = None
+
+    def add(self, experiment: Experiment):
+        assert len(self.results_i) == len(self.results_plus)
+        assert len(self.results_i) == len(self.results_union)
+        self.results_i.append(experiment.result_i)
+        self.results_plus.append(experiment.result_plus)
+        self.results_union.append(experiment.result_union)
+
+        if self.base_function is None:
+            self.base_function = experiment.base_function
+        elif self.base_function != experiment.base_function:
+            self.base_function = "INVALID"
+
+        if self.m is None:
+            self.m = experiment.m
+        elif self.m != experiment.m:
+            self.m = "INVALID"
+
+        if self.n is None:
+            self.n = experiment.n
+        elif self.n != experiment.n:
+            self.n = "INVALID"
+
+        if self.delta is None:
+            self.delta = experiment.delta
+        elif self.delta != experiment.delta:
+            self.delta = "INVALID"
+
+    def size(self):
+        return len(self.results_i)
+
+    def get_times(self):
+        mls_i_time = 0
+        mls_plus_time = 0
+        mls_union_time = 0
+        for i in range(len(self.results_i)):
+            mls_i_time += self.results_i[i].time
+            mls_plus_time += self.results_plus[i].time
+            mls_union_time += self.results_union[i].time
+
+        return (mls_i_time, mls_plus_time, mls_union_time)
+
+    def get_error_average(self, error='rmse'):
+        mls_i_error = 0
+        mls_plus_error = 0
+        mls_union_error = 0
+
+        for i in range(len(self.results_i)):
+            if error == 'rmse':
+                mls_i_error += self.results_i[i].error.root_err
+                mls_plus_error += self.results_plus[i].error.root_err
+                mls_union_error += self.results_union[i].error.root_err
+            else:
+                raise ValueError(f"Unknown error type: {error}")
+
+        return mls_i_error, mls_plus_error, mls_union_error
+
+
+class ExperimentStore:
+    def __init__(self):
+        self.experiments = dict()
+
+    def add_experiment(self, experiment: AggregatedExperiment):
+        if (experiment.n, experiment.m, experiment.delta, experiment.base_function) in self.experiments:
+            self.experiments[(experiment.n, experiment.m, experiment.delta, experiment.base_function)].add(experiment)
+        else:
+            self.experiments[(experiment.n, experiment.m, experiment.delta, experiment.base_function)] = experiment
+
+    def get_error_df(self, error='rmse'):
+        import pandas as pd
+
+        df = pd.DataFrame(columns=['n', 'm', 'delta', 'base_function', 'mls_i', 'mls_plus', 'mls_union'])
+
+        for setting, experiment in self.experiments.items():
+            n, m, delta, base_function = setting
+            error_averages = experiment.get_error_average(error)
+            df.loc[len(df)] = (n, m, delta, base_function, error_averages[0], error_averages[1], error_averages[2])
+
+        return df
+
+
+def basic_experiment(n, m, delta, base_points='halton', base_function='sine', plot=False):
+    line = (0, np.pi)
+    gap = 1
+    extended_line = (line[0] - 2 * gap, line[1] + 2 * gap)
 
     small_n = n
     # I_base = np.random.uniform(extended_line[0], extended_line[1], small_n)
-    X_base = np.random.uniform(extended_line[0], extended_line[1], (small_n, small_n))
-    Y_base = np.random.uniform(extended_line[0], extended_line[1], (small_n, small_n))
+    if base_points == 'uniform':
+        X_base = np.random.uniform(extended_line[0], extended_line[1], (small_n, small_n))
+        Y_base = np.random.uniform(extended_line[0], extended_line[1], (small_n, small_n))
+        X_J = np.random.uniform(extended_line[0], extended_line[1], (small_n, small_n))
+        Y_J = np.random.uniform(extended_line[0], extended_line[1], (small_n, small_n))
+    elif base_points == 'halton':
+        from scipy.stats import qmc
+        sampler = qmc.Halton(d=2, scramble=False)
+        base = sampler.random(n=small_n ** 2)
+        base = qmc.scale(base, extended_line[0], extended_line[1])
+        base_J = sampler.random(n=small_n ** 2)
+        base_J = qmc.scale(base_J, extended_line[0], extended_line[1])
+        X_base, Y_base = base[:, 0].reshape(small_n, small_n), base[:, 1].reshape(small_n, small_n)
+        X_J, Y_J = base_J[:, 0].reshape(small_n, small_n), base_J[:, 1].reshape(small_n, small_n)
+    else:
+        ValueError(f'Unknown base_points={base_points} argument')
+
+    if base_function == 'sine':
+        Z_base = np.sin(X_base * Y_base * 2)
+        Z_J = np.sin(X_J * Y_J * 2)
+        # Z_base = np.sin(X_base * Y_base)
+        # Z_J = np.sin(X_J * Y_J)
+    elif base_function == 'exp':
+        Z_base = np.exp(X_base * Y_base / (2 * np.pi))
+        Z_J = np.exp(X_J * Y_J / (2 * np.pi))
+        # Z_base = np.exp(X_base * Y_base )
+        # Z_J = np.exp(X_J * Y_J)
+
     XY_base = np.column_stack((X_base.ravel(), Y_base.ravel()))
-    Z_base = np.sin(X_base * Y_base / (2 * np.pi))
-
-    J_base = np.random.uniform(extended_line[0], extended_line[1], small_n)
-    X_J = np.random.uniform(extended_line[0], extended_line[1], (small_n, small_n))
-    Y_J = np.random.uniform(extended_line[0], extended_line[1], (small_n, small_n))
     XY_J = np.column_stack((X_J.ravel(), Y_J.ravel()))
-    Z_J = np.sin(X_J * Y_J / (2 * np.pi))
 
-    I_approx_at_base = moving_least_squares(XY_base, Z_base.ravel(), m=m, delta=delta, x_eval=XY_base)
-    I_approx_at_J = moving_least_squares(XY_base, Z_base.ravel(), m=m, delta=delta, x_eval=XY_J)
-    e_at_J = I_approx_at_J - Z_J.ravel()
+    mls_i = MLSResult()
+    mls_plus = MLSResult()
+    mls_union = MLSResult()
 
-    MLS_approx_at_error = moving_least_squares(XY_J, e_at_J, m=m, delta=delta, x_eval=XY_base)
+    with Timer() as t:
+        I_approx_at_base = moving_least_squares(XY_base, Z_base.ravel(), m=m, delta=delta, x_eval=XY_base)
+    mls_i.time = t.elapsed_time
+
+    with Timer() as t:
+        I_approx_at_J = moving_least_squares(XY_base, Z_base.ravel(), m=m, delta=delta, x_eval=XY_J)
+        e_at_J = I_approx_at_J - Z_J.ravel()
+
+        MLS_approx_at_error = moving_least_squares(XY_J, e_at_J, m=m, delta=delta, x_eval=XY_base)
+    mls_plus.time = t.elapsed_time
+
     # combined approach
 
-    stacked_XY = np.vstack((XY_base, XY_J))
-    stacked_Z = np.vstack((Z_base, Z_J)).ravel()
-    I_J_approx_at_base = moving_least_squares(stacked_XY, stacked_Z, m=m, delta=delta, x_eval=XY_base)
+    with Timer() as t:
+        stacked_XY = np.vstack((XY_base, XY_J))
+        stacked_Z = np.vstack((Z_base, Z_J)).ravel()
+        I_J_approx_at_base = moving_least_squares(stacked_XY, stacked_Z, m=m, delta=delta, x_eval=XY_base)
+    mls_union.time = t.elapsed_time
 
     # mask = np.ones_like(X_base, dtype=bool)
     mask = (X_base >= line[0]) & (X_base <= line[1]) & (Y_base >= line[0]) & (Y_base <= line[1])
@@ -191,15 +193,18 @@ def basic_experiment(n, m):
     X_base_masked = X_base[mask]
     Y_base_masked = Y_base[mask]
     I_approx_at_base_masked = I_approx_at_base[mask]
+    if plot:
+        Z_base_masked = Z_base[mask]
 
-    # fig = plt.figure()
-    # ax = fig.add_subplot(111, projection='3d')
-    #
-    # ax.scatter(X_base_masked, Y_base_masked, I_approx_at_base_masked, color='blue', alpha=0.5)
-    #
-    # ax.set_xlabel('X')
-    # ax.set_ylabel('Y')
-    # ax.set_zlabel('Z')
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+
+        ax.scatter(X_base_masked, Y_base_masked, I_approx_at_base_masked, color='blue', alpha=0.5)
+        ax.plot_trisurf(X_base_masked, Y_base_masked, Z_base_masked, color='orange', alpha=0.5)
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        ax.set_title('MLS on set I')
 
     mask_at_J = (X_J >= line[0]) & (X_J <= line[1]) & (Y_J >= line[0]) & (Y_J <= line[1])
     I_approx_at_J = I_approx_at_J.reshape(small_n, small_n)
@@ -207,14 +212,19 @@ def basic_experiment(n, m):
     Y_J_masked = Y_J[mask_at_J]
     I_approx_at_J_masked = I_approx_at_J[mask_at_J]
 
-    # fig2 = plt.figure()
-    # ax = fig2.add_subplot(111, projection='3d')
-    #
-    # ax.scatter(X_J_masked, Y_J_masked, I_approx_at_J_masked, color='blue', alpha=0.5)
-    #
-    # ax.set_xlabel('X')
-    # ax.set_ylabel('Y')
-    # ax.set_zlabel('Z')
+    if plot:
+        Z_J_base_masked = Z_J[mask_at_J]
+
+        fig2 = plt.figure()
+        ax = fig2.add_subplot(111, projection='3d')
+
+        ax.scatter(X_J_masked, Y_J_masked, I_approx_at_J_masked, color='blue', alpha=0.5)
+        ax.plot_trisurf(X_J_masked, Y_J_masked, Z_J_base_masked, color='orange', alpha=0.5)
+
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        ax.set_title('Iterative first approx')
 
     mask_at_J = (X_J >= line[0]) & (X_J <= line[1]) & (Y_J >= line[0]) & (Y_J <= line[1])
     e_at_J = e_at_J.reshape(small_n, small_n)
@@ -222,27 +232,45 @@ def basic_experiment(n, m):
     Y_J_masked = Y_J[mask_at_J]
     e_at_J_masked = e_at_J[mask_at_J]
 
-    # fig3 = plt.figure()
-    # ax = fig3.add_subplot(111, projection='3d')
-    #
-    # ax.scatter(X_J_masked, Y_J_masked, e_at_J_masked, color='blue', alpha=0.5)
-    #
-    # ax.set_xlabel('X')
-    # ax.set_ylabel('Y')
-    # ax.set_zlabel('Z')
+    mask_base = (X_base >= line[0]) & (X_base <= line[1]) & (Y_base >= line[0]) & (Y_base <= line[1])
+    X_base_masked = X_base[mask_base]
+    Y_base_masked = Y_base[mask_base]
+    MLS_approx_at_error = MLS_approx_at_error.reshape(small_n, small_n)
+    MLS_approx_at_error_masked = MLS_approx_at_error[mask_base]
+
+    if plot:
+        fig3 = plt.figure()
+        ax = fig3.add_subplot(111, projection='3d')
+
+        ax.scatter(X_J_masked, Y_J_masked, e_at_J_masked, label='Error on set I', color='blue', alpha=0.5)
+        ax.plot_trisurf(X_base_masked, Y_base_masked, MLS_approx_at_error_masked, label='Approximated error', color='orange', alpha=0.5)
+
+        ax.legend()
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        ax.set_title(f'Error on I vs approximated error func={base_function}')
 
     mask_base = (X_base >= line[0]) & (X_base <= line[1]) & (Y_base >= line[0]) & (Y_base <= line[1])
     MLS_approx_at_error = MLS_approx_at_error.reshape(small_n, small_n)
     X_base_masked = X_base[mask_base]
     Y_base_masked = Y_base[mask_base]
+    Z_base_masked = Z_base[mask_base]
     MLS_approx_at_error_masked = MLS_approx_at_error[mask_base]
 
-    # fig4 = plt.figure()
-    # ax = fig4.add_subplot(111, projection='3d')
-    # ax.scatter(X_base_masked, Y_base_masked, MLS_approx_at_error_masked, color='blue', alpha=0.5)
-    # ax.set_xlabel('X')
-    # ax.set_ylabel('Y')
-    # ax.set_zlabel('Z')
+    if plot:
+        fig4 = plt.figure()
+        ax = fig4.add_subplot(111, projection='3d')
+        # ax.scatter(X_base_masked, Y_base_masked, MLS_approx_at_error_masked, color='blue', alpha=0.5)
+        ax.scatter(X_base_masked, Y_base_masked, I_approx_at_base[mask_base] - MLS_approx_at_error_masked, label='Improved approximation', color='green', alpha=0.5)
+        ax.scatter(X_base_masked, Y_base_masked, I_approx_at_base[mask_base], label='Approximation on I', color='blue', alpha=0.5)
+
+        ax.plot_trisurf(X_base_masked, Y_base_masked, Z_base_masked, color='orange', alpha=0.5)
+        ax.legend()
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        ax.set_title(f'Iterative MLS approximation, func={base_function}')
 
     mask_base = (X_base >= line[0]) & (X_base <= line[1]) & (Y_base >= line[0]) & (Y_base <= line[1])
     I_J_approx_at_base = I_J_approx_at_base.reshape(small_n, small_n)
@@ -250,24 +278,36 @@ def basic_experiment(n, m):
     Y_base_masked = Y_base[mask_base]
     I_J_approx_at_base_masked = I_J_approx_at_base[mask_base]
 
-    # fig5 = plt.figure()
-    # ax = fig5.add_subplot(111, projection='3d')
-    # ax.scatter(X_base_masked, Y_base_masked, I_J_approx_at_base_masked, color='blue', alpha=0.5)
-    #
-    # ax.set_xlabel('X')
-    # ax.set_ylabel('Y')
-    # ax.set_zlabel('Z')
+    if plot:
+        fig5 = plt.figure()
+        ax = fig5.add_subplot(111, projection='3d')
+        ax.scatter(X_base_masked, Y_base_masked, I_J_approx_at_base_masked, color='blue', alpha=0.5)
 
-    mls_i = np.linalg.norm(I_approx_at_base[mask_base] - Z_base[mask_base])
-    mls_i_mls_e = np.linalg.norm(I_approx_at_base[mask_base] - MLS_approx_at_error_masked - Z_base[mask_base])
-    mls_i_union_j = np.linalg.norm(I_J_approx_at_base[mask_base] - Z_base[mask_base])
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        ax.set_title('Union approximation')
 
-    print("Error of MLS_I(x): ", mls_i)
-    print("Error MLS_I(x) + MLS_e(x): ", mls_i_mls_e)
-    print("Error MLS_(I union J)(x): ", mls_i_union_j)
+    mls_i.error = Error.calculate_error(I_approx_at_base[mask_base], Z_base[mask_base])
+    mls_plus.error = Error.calculate_error(I_approx_at_base[mask_base] - MLS_approx_at_error_masked, Z_base[mask_base])
+    mls_union.error = Error.calculate_error(I_J_approx_at_base[mask_base], Z_base[mask_base])
 
-    # plt.show(block=True)
-    return (mls_i, mls_i_mls_e, mls_i_union_j)
+    print("Error of MLS_I(x): ", mls_i.error)
+    print("Error MLS_I(x) + MLS_e(x): ", mls_plus.error)
+    print("Error MLS_(I union J)(x): ", mls_union.error)
+
+    experiment = Experiment()
+    experiment.result_i = mls_i
+    experiment.result_plus = mls_plus
+    experiment.result_union = mls_union
+    experiment.base_function = base_function
+    experiment.m = m
+    experiment.n = n
+    experiment.delta = delta
+
+    if plot:
+        plt.show(block=True)
+    return experiment
 
 
 def error_diff_main():
@@ -323,52 +363,57 @@ def error_diff_main():
     plt.show(block=True)
 
 
-def run_experiment(n, m, tries, func):
-    res = []
-    start = time.time()
-    for i in range(tries):
-        res.append(func(n=n, m=m))
-    end = time.time()
-    print(f"Experiment took: {end - start}")
-    return res
+def run_experiment(n, m, delta, tries, base_function, func):
+    aggregated_experiment = AggregatedExperiment()
+    with Timer() as timer:
+        for i in range(tries):
+            if func == 'basic_experiment':
+                aggregated_experiment.add(basic_experiment(n=n, m=m, delta=delta, base_function=base_function))
+    print(f"Experiment took: {timer.elapsed_time}")
+    mls_i_time, mls_plus_time, mls_union_time = aggregated_experiment.get_times()
+    print(f"mls_i / mls_plus / mls_union : {mls_i_time, mls_plus_time, mls_union_time}")
+
+    return aggregated_experiment
 
 
-if __name__ == "__main__":
+def run_all_experiments():
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from tqdm import tqdm
 
     tries = 4
 
-    res_list = []
-    for j in [0, 1, 2]:
-        for i in [35, 40, 45]:
-            res_list.append(run_experiment(i, j, tries, func=basic_experiment))
+    tasks = []
+    res_list = ExperimentStore()
+    for base_function in ['sine', 'exp']:
+        for m in [0, 1, 2]:
+            for n in [45, 50, 55, 60, 65]:
+                for delta in [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1., 1.1, 1.2]:
+                    # res_list.add_experiment(run_experiment(n, m, delta, tries, base_function, 'basic_experiment'))
+                    tasks.append((n, m, delta, tries, base_function, 'basic_experiment'))
 
-    res_size = len(res_list)
-    errors = np.empty((tries, res_size), dtype=float)
-    mid_mls = np.empty((tries, res_size), dtype=float)
-    mid_mls2 = np.empty((tries, res_size), dtype=float)
-    mls_i = np.empty((tries, res_size), dtype=float)
-    mls_plus = np.empty((tries, res_size), dtype=float)
-    mls_union = np.empty((tries, res_size), dtype=float)
-    for i in range(tries):
-        errors[i, :] = np.array(
-            [res[i][0] - res[i][2] for res in res_list])
-        mid_mls[i, :] = np.array(
-            [res[i][0] - res[i][1] for res in res_list])
-        mid_mls2[i, :] = np.array(
-            [res[i][2] - res[i][1] for res in res_list])
-        mls_i[i, :] = np.array(
-            [res[i][0] for res in res_list])
-        mls_plus[i, :] = np.array(
-            [res[i][1] for res in res_list])
-        mls_union[i, :] = np.array(
-            [res[i][2] for res in res_list])
+    with ProcessPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(run_experiment, *arg) for arg in tasks]
 
-    print("Averages: ", np.mean(errors, axis=0))
-    print("Averages mid_mls: ", np.mean(mid_mls, axis=0))
-    print("Averages mid_mls2: ", np.mean(mid_mls2, axis=0))
-    print("Averages mls_i: ", np.mean(mls_i, axis=0))
-    print("Averages mls_plus: ", np.mean(mls_plus, axis=0))
-    print("Averages mls_union: ", np.mean(mls_union, axis=0))
+        for future in tqdm(as_completed(futures), total=len(futures), desc='Processing'):
+            res_list.add_experiment(future.result())
+
+    error_averages = res_list.get_error_df(error='rmse')
+    error_averages.to_csv('experiments-halton.csv')
+    print("mls_i, mls_plus, mls_union: \n", error_averages)
+
+
+if __name__ == "__main__":
+    print("Program begin")
+    # error_diff_main()
+    # error_diff_main()
+    exp = basic_experiment(m=1, n=40, delta=0.4, base_function='sine', plot=True)
+    print(exp.result_i)
+    print(exp.result_plus)
+
+    start = time.time()
+    # run_all_experiments()
+    end = time.time()
+    print(f"Time took total: {end - start}s")
 
     # n = 50
     #
