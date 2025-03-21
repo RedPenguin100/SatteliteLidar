@@ -1,7 +1,7 @@
 import numpy as np
 
 from numba import njit
-from SatteliteLidar.research.src.comb_utils import my_polynomial_features
+from stepwise_mls.comb_utils import my_polynomial_features
 
 
 @njit
