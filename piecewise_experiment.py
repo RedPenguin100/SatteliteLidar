@@ -95,7 +95,7 @@ def plot_data(data, name='plot'):
     # data = data[(data['geolocation_sensitivity_a2'] > 0.94) & (data['geolocation_sensitivity_a2'] < 0.95)]
     # data = data[(data['geolocation_sensitivity_a2'] > 0.99)]
     # data = data[(data['als_h'] > 1.5) & (data['als_h'] < 3)]
-    # data = data[(data['als_h'] < 1.5) ]
+    data = data[(data['als_h'] < 1.5) & (data['rh_98'] < 10.)]
     # data = data[(data['rh_98'] < 15)]
     # data = data[data['quality_flag'] == 1]
     # print(data.sort_values(by='Longitude', ascending=False).tail(30)[['selected_algorithm', 'geolocation_sensitivity_a2', 'Site', 'rx_assess_quality_flag', 'degrade_flag', 'quality_flag', 'BEAM', 'solar_elevation', 'sensitivity', 'rh_98', 'als_h', 'Latitude', 'Longitude']])
@@ -106,6 +106,7 @@ def plot_data(data, name='plot'):
     # data = data[(data['Latitude'] < -12.078) | (data['Latitude'] > -12)]
     # data = data[(data['Latitude'] > -12.078) & (data['Latitude'] < -12)]
 
+    print("Total; points used: ", len(data))
     X = data['rh_98'].to_numpy().reshape(-1, 1)
 
     Y = data['als_h'].to_numpy()
@@ -124,36 +125,36 @@ def plot_data(data, name='plot'):
     # result = piecewise_linear_squares(X, Y, exp_name='Piecewise', data=data)
     # plot_piecewise(result)
 
-    # result = fit_data_least(data, exp_name=name)
+    result = fit_data_least(data, exp_name=name)
 
-    result = fit_data(data, small_tree=False, exp_name=name)
-    print(str(result))
-    # plot_line(result, 'geolocation_sensitivity_a2')
+    # result = fit_data(data, sensitivity=True, sensitivity_geo=True, small_tree=False, exp_name=name)
+    plot_line(result, 'geolocation_sensitivity_a2')
     return result
 
 original_data = all_data.copy()
 results = []
 
-for _ in range(1000):
-    data = original_data.copy()
-    permutation_order = np.random.permutation(len(data))
-
-    data['weights'] = calculate_weights(data, small_tree=False)
-    data['weights'] = data['weights'].iloc[permutation_order].values
-    # data['rh_98'] = data['rh_98'].iloc[permutation_order].values
-    # data['rh_99'] = data['rh_99'].iloc[permutation_order].values
-    # data['rh_100'] = data['rh_100'].iloc[permutation_order].values
-    # data['als_h'] = data['als_h'].iloc[permutation_order].values
-    results.append(plot_data(data, name='data'))
-
-print(">>>>>>>>>")
-counter = 0
-for result in results:
-    if result.slope > 0.75:
-        counter += 1
-        print(result)
-print("Length of significant ", counter)
-
+# for _ in range(1000):
+#     data = cluster3.copy()
+#     permutation_order = np.random.permutation(len(data))
+#     data['weights'] = calculate_weights(data, small_tree=False)
+#     data['weights'] = data['weights'].iloc[permutation_order].values
+#     # data['rh_98'] = data['rh_98'].iloc[permutation_order].values
+#     # data['rh_99'] = data['rh_99'].iloc[permutation_order].values
+#     # data['rh_100'] = data['rh_100'].iloc[permutation_order].values
+#     # data['als_h'] = data['als_h'].iloc[permutation_order].values
+#     result = plot_data(data, name='data')
+#     print(str(result))
+#     results.append(result)
+#
+# print(">>>>>>>>>")
+# counter = 0
+# for result in results:
+#     if result.slope > 0.75:
+#         counter += 1
+#         print(result)
+# print("Length of significant ", counter)
+#
 plot_data(original_data, name='data')
 
 # plot_data(cluster1, name='cluster1')
