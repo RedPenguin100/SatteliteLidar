@@ -2,7 +2,7 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 from fontTools.unicodedata import block
-from SatteliteLidar.error_utils import rmse
+from error_utils import rmse
 
 from util import moving_least_squares
 

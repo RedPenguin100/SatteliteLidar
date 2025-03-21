@@ -5,13 +5,12 @@ from math import comb
 import pytest
 
 import numpy as np
-from numba import njit
 
 from sklearn.preprocessing import PolynomialFeatures
 
-from SatteliteLidar.research.src.comb_utils import n_choose_r, combinations_numba, compositions_numba, \
+from stepwise_mls.comb_utils import n_choose_r, combinations_numba, compositions_numba, \
     my_polynomial_features
-from SatteliteLidar.research.src.mls import find_close_fast, quick_linalg_norm_axis_minus_1, moving_least_squares
+from stepwise_mls.mls import find_close_fast, quick_linalg_norm_axis_minus_1, moving_least_squares
 
 
 @pytest.mark.parametrize('n,r', [(2, 1), (3, 1), (5, 2), (10, 3)])

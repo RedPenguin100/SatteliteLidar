@@ -1,10 +1,10 @@
 import time
 import numpy as np
-from SatteliteLidar.error_utils import rmse, Error
+from error_utils import rmse, Error
 from matplotlib import pyplot as plt
 
-from SatteliteLidar.research.src.mls import moving_least_squares
-from SatteliteLidar.timer import Timer
+from mls import moving_least_squares
+from timer import Timer
 
 
 def get_sine_data_2d(n, line, dev, bias: float = 0.):
