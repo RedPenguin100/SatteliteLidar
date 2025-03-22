@@ -11,6 +11,7 @@ from sklearn.preprocessing import PolynomialFeatures
 from stepwise_mls.comb_utils import n_choose_r, combinations_numba, compositions_numba, \
     my_polynomial_features
 from stepwise_mls.mls import find_close_fast, quick_linalg_norm_axis_minus_1, moving_least_squares
+from stepwise_mls.util import generate_2d_base
 
 
 @pytest.mark.parametrize('n,r', [(2, 1), (3, 1), (5, 2), (10, 3)])
@@ -53,6 +54,8 @@ def test_sanity_2d():
     assert c.shape == (n ** 2,)
     # TODO: write better regression testing
     assert pytest.approx(c[146]) == 0.4408272963225725
+
+
 
 
 def test_find_close():
@@ -132,3 +135,25 @@ def test_quick_norm3():
         b = np.linalg.norm(a, axis=-1)
 
     assert np.all(np.linalg.norm(a, axis=-1) == quick_linalg_norm_axis_minus_1(a))
+
+
+def test_mls():
+    line = (0, np.pi)
+    n = 40
+    base_points ='halton'
+
+    X_I, Y_I = generate_2d_base(line, n, base_points)
+    X_J, Y_J = generate_2d_base(line, n, base_points)
+
+    Z_I = np.sin(X_I * Y_I * 2)
+    Z_J = np.sin(X_J * Y_J * 2)
+
+    XY_I = np.column_stack((X_I.ravel(), Y_I.ravel()))
+    XY_J = np.column_stack((X_J.ravel(), Y_J.ravel()))
+    stacked_XY = np.vstack((XY_I, XY_J))
+
+    mls_i = moving_least_squares(XY_I, Z_I.ravel(), m=1, delta=1, x_eval=XY_I)
+    mls_ij = moving_least_squares(XY_I, Z_I.ravel(), m=1, delta=1, x_eval=stacked_XY)
+
+    assert np.all(mls_ij[:len(XY_I)] == mls_i)
+
