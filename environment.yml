@@ -1,0 +1,11 @@
+name: mls_fixed
+
+channels:
+  - defaults
+dependencies:
+  - numpy<2
+  - numba=0.61
+  - pytest
+  - tqdm
+  - scikit-learn=1.6.1
+  - pandas=2.2.3

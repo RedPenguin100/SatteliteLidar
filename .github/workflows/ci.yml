@@ -1,0 +1,40 @@
+name: Build and Test Python
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          submodules: true
+      - name: Set up Miniconda
+        uses: conda-incubator/setup-miniconda@v2
+        with:
+          python-version: 3.11             # Specify your desired Python version
+          channels: defaults
+          auto-activate-base: false
+          auto-update-conda: false
+          activate-environment: mls_fixed       # Name of the conda environment defined in environment.yml
+          environment-file: environment.yml # Use an environment file to define your dependencies
+#          use-only-tar-bz2: true # IMPORTANT: This needs to be set for caching to work properly!
+
+      - name: Install mls_fixed
+        run: |
+          conda develop .
+      - name: Run tests
+        run: |
+          pytest
