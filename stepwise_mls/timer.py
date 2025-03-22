@@ -3,6 +3,9 @@ import time
 
 class Timer:
 
+    def __init__(self, verbose=False):
+        self.verbose = verbose
+
     def __enter__(self):
         self.start_time = time.time()
         return self
@@ -10,4 +13,5 @@ class Timer:
     def __exit__(self, exc_type, exc_value, traceback):
         self.end_time = time.time()
         self.elapsed_time = self.end_time - self.start_time
-        print(f'Elapsed time: {self.elapsed_time: .4f} seconds')
+        if self.verbose:
+            print(f'Elapsed time: {self.elapsed_time: .4f} seconds')

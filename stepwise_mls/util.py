@@ -1,10 +1,10 @@
-import time
 import numpy as np
-from error_utils import rmse, Error
 from matplotlib import pyplot as plt
 
-from mls import moving_least_squares
-from timer import Timer
+from stepwise_mls.error_utils import Error
+from stepwise_mls.mls import moving_least_squares, mls_combined, mls_novel_all, mls_combined_all
+from stepwise_mls.timer import Timer
+from stepwise_mls.experiment import MLSResult, Experiment, AggregatedExperiment, ExperimentStore
 
 
 def get_sine_data_2d(n, line, dev, bias: float = 0.):
@@ -17,112 +17,21 @@ def get_sine_data_2d(n, line, dev, bias: float = 0.):
     return X, Y, Z
 
 
-class MLSResult:
-    def __init__(self):
-        self.time = None
-        self.error = None
+def generate_2d_base(line, n, base_points='uniform'):
+    if base_points == 'uniform':
+        X_base = np.random.uniform(line[0], line[1], (n, n))
+        Y_base = np.random.uniform(line[0], line[1], (n, n))
+        return X_base, Y_base
+    elif base_points == 'halton':
+        from scipy.stats import qmc
+        if not hasattr(generate_2d_base, 'sampler'):
+            generate_2d_base.sampler = qmc.Halton(d=2, scramble=False)
+        base = generate_2d_base.sampler.random(n=n ** 2)
+        base = qmc.scale(base, line[0], line[1])
+        X_base, Y_base = base[:, 0].reshape(n, n), base[:, 1].reshape(n, n)
+        return X_base, Y_base
 
-
-class Experiment:
-    def __init__(self):
-        self.result_i = None
-        self.result_plus = None
-        self.result_union = None
-
-        self.n = None
-        self.m = None
-        self.delta = None
-        self.base_function = None
-
-
-class AggregatedExperiment:
-    def __init__(self):
-        self.results_i = []
-        self.results_plus = []
-        self.results_union = []
-        self.base_function = None
-        self.m = None
-        self.n = None
-        self.delta = None
-
-    def add(self, experiment: Experiment):
-        assert len(self.results_i) == len(self.results_plus)
-        assert len(self.results_i) == len(self.results_union)
-        self.results_i.append(experiment.result_i)
-        self.results_plus.append(experiment.result_plus)
-        self.results_union.append(experiment.result_union)
-
-        if self.base_function is None:
-            self.base_function = experiment.base_function
-        elif self.base_function != experiment.base_function:
-            self.base_function = "INVALID"
-
-        if self.m is None:
-            self.m = experiment.m
-        elif self.m != experiment.m:
-            self.m = "INVALID"
-
-        if self.n is None:
-            self.n = experiment.n
-        elif self.n != experiment.n:
-            self.n = "INVALID"
-
-        if self.delta is None:
-            self.delta = experiment.delta
-        elif self.delta != experiment.delta:
-            self.delta = "INVALID"
-
-    def size(self):
-        return len(self.results_i)
-
-    def get_times(self):
-        mls_i_time = 0
-        mls_plus_time = 0
-        mls_union_time = 0
-        for i in range(len(self.results_i)):
-            mls_i_time += self.results_i[i].time
-            mls_plus_time += self.results_plus[i].time
-            mls_union_time += self.results_union[i].time
-
-        return (mls_i_time, mls_plus_time, mls_union_time)
-
-    def get_error_average(self, error='rmse'):
-        mls_i_error = 0
-        mls_plus_error = 0
-        mls_union_error = 0
-
-        for i in range(len(self.results_i)):
-            if error == 'rmse':
-                mls_i_error += self.results_i[i].error.root_err
-                mls_plus_error += self.results_plus[i].error.root_err
-                mls_union_error += self.results_union[i].error.root_err
-            else:
-                raise ValueError(f"Unknown error type: {error}")
-
-        return mls_i_error, mls_plus_error, mls_union_error
-
-
-class ExperimentStore:
-    def __init__(self):
-        self.experiments = dict()
-
-    def add_experiment(self, experiment: AggregatedExperiment):
-        if (experiment.n, experiment.m, experiment.delta, experiment.base_function) in self.experiments:
-            self.experiments[(experiment.n, experiment.m, experiment.delta, experiment.base_function)].add(experiment)
-        else:
-            self.experiments[(experiment.n, experiment.m, experiment.delta, experiment.base_function)] = experiment
-
-    def get_error_df(self, error='rmse'):
-        import pandas as pd
-
-        df = pd.DataFrame(columns=['n', 'm', 'delta', 'base_function', 'mls_i', 'mls_plus', 'mls_union'])
-
-        for setting, experiment in self.experiments.items():
-            n, m, delta, base_function = setting
-            error_averages = experiment.get_error_average(error)
-            df.loc[len(df)] = (n, m, delta, base_function, error_averages[0], error_averages[1], error_averages[2])
-
-        return df
+    ValueError(f'Unknown base_points={base_points} argument')
 
 
 def basic_experiment(n, m, delta, base_points='halton', base_function='sine', plot=False):
@@ -132,22 +41,8 @@ def basic_experiment(n, m, delta, base_points='halton', base_function='sine', pl
 
     small_n = n
     # I_base = np.random.uniform(extended_line[0], extended_line[1], small_n)
-    if base_points == 'uniform':
-        X_base = np.random.uniform(extended_line[0], extended_line[1], (small_n, small_n))
-        Y_base = np.random.uniform(extended_line[0], extended_line[1], (small_n, small_n))
-        X_J = np.random.uniform(extended_line[0], extended_line[1], (small_n, small_n))
-        Y_J = np.random.uniform(extended_line[0], extended_line[1], (small_n, small_n))
-    elif base_points == 'halton':
-        from scipy.stats import qmc
-        sampler = qmc.Halton(d=2, scramble=False)
-        base = sampler.random(n=small_n ** 2)
-        base = qmc.scale(base, extended_line[0], extended_line[1])
-        base_J = sampler.random(n=small_n ** 2)
-        base_J = qmc.scale(base_J, extended_line[0], extended_line[1])
-        X_base, Y_base = base[:, 0].reshape(small_n, small_n), base[:, 1].reshape(small_n, small_n)
-        X_J, Y_J = base_J[:, 0].reshape(small_n, small_n), base_J[:, 1].reshape(small_n, small_n)
-    else:
-        ValueError(f'Unknown base_points={base_points} argument')
+    X_base, Y_base = generate_2d_base(line, n, base_points)
+    X_J, Y_J = generate_2d_base(line, n, base_points)
 
     if base_function == 'sine':
         Z_base = np.sin(X_base * Y_base * 2)
@@ -181,9 +76,7 @@ def basic_experiment(n, m, delta, base_points='halton', base_function='sine', pl
     # combined approach
 
     with Timer() as t:
-        stacked_XY = np.vstack((XY_base, XY_J))
-        stacked_Z = np.vstack((Z_base, Z_J)).ravel()
-        I_J_approx_at_base = moving_least_squares(stacked_XY, stacked_Z, m=m, delta=delta, x_eval=XY_base)
+        I_J_approx_at_base = mls_combined(XY_base, Z_base, XY_J, Z_J, m, delta)
     mls_union.time = t.elapsed_time
 
     # mask = np.ones_like(X_base, dtype=bool)
@@ -243,7 +136,8 @@ def basic_experiment(n, m, delta, base_points='halton', base_function='sine', pl
         ax = fig3.add_subplot(111, projection='3d')
 
         ax.scatter(X_J_masked, Y_J_masked, e_at_J_masked, label='Error on set I', color='blue', alpha=0.5)
-        ax.plot_trisurf(X_base_masked, Y_base_masked, MLS_approx_at_error_masked, label='Approximated error', color='orange', alpha=0.5)
+        ax.plot_trisurf(X_base_masked, Y_base_masked, MLS_approx_at_error_masked, label='Approximated error',
+                        color='orange', alpha=0.5)
 
         ax.legend()
         ax.set_xlabel('X')
@@ -262,8 +156,10 @@ def basic_experiment(n, m, delta, base_points='halton', base_function='sine', pl
         fig4 = plt.figure()
         ax = fig4.add_subplot(111, projection='3d')
         # ax.scatter(X_base_masked, Y_base_masked, MLS_approx_at_error_masked, color='blue', alpha=0.5)
-        ax.scatter(X_base_masked, Y_base_masked, I_approx_at_base[mask_base] - MLS_approx_at_error_masked, label='Improved approximation', color='green', alpha=0.5)
-        ax.scatter(X_base_masked, Y_base_masked, I_approx_at_base[mask_base], label='Approximation on I', color='blue', alpha=0.5)
+        ax.scatter(X_base_masked, Y_base_masked, I_approx_at_base[mask_base] - MLS_approx_at_error_masked,
+                   label='Improved approximation', color='green', alpha=0.5)
+        ax.scatter(X_base_masked, Y_base_masked, I_approx_at_base[mask_base], label='Approximation on I', color='blue',
+                   alpha=0.5)
 
         ax.plot_trisurf(X_base_masked, Y_base_masked, Z_base_masked, color='orange', alpha=0.5)
         ax.legend()
@@ -308,6 +204,85 @@ def basic_experiment(n, m, delta, base_points='halton', base_function='sine', pl
     if plot:
         plt.show(block=True)
     return experiment
+
+
+def hetero_experiment(n, m, delta, base_points='halton', base_function='sine'):
+    np.random.seed(0)
+    line = (0, np.pi)
+    gap = 1
+    extended_line = (line[0] - gap, line[1] + gap)
+
+    mean_I, mean_J = 0, 0
+    stddev_I, stddev_J = 0.1, 0.3
+
+    mls_plus = MLSResult()
+    mls_union = MLSResult()
+
+    X_I, Y_I = generate_2d_base(extended_line, n, base_points=base_points)
+    Z_truth_I = np.sin(X_I * Y_I * 2)
+    Z_I = Z_truth_I + np.random.normal(mean_I, stddev_I, X_I.shape)
+    XY_I = np.column_stack((X_I.ravel(), Y_I.ravel()))
+
+    X_J, Y_J = generate_2d_base(extended_line, n, base_points=base_points)
+    Z_truth_J = np.sin(X_J * Y_J * 2)
+    Z_J = Z_truth_J + np.random.normal(mean_J, stddev_J, X_J.shape)
+    XY_J = np.column_stack((X_J.ravel(), Y_J.ravel()))
+
+    # Consider if this is right
+    with Timer(verbose=False) as timer:
+        mls_approx_novel_all = mls_novel_all(XY_I, Z_I, XY_J, Z_J, m, delta)
+    mls_plus.time = timer.elapsed_time
+
+    with Timer(verbose=False) as timer:
+        mls_approx_combined = mls_combined_all(XY_I, Z_I, XY_J, Z_J, m, delta)
+    mls_union.time = timer.elapsed_time
+
+    stacked_XY = np.vstack((XY_I, XY_J))
+    stacked_Z = np.vstack((Z_I, Z_J)).ravel()
+
+    # mask_I = (XY_I >= line[0]) & (XY_I <= line[1])
+    # mask_I = np.logical_and(mask_I[:, 0], mask_I[:, 1])
+
+    mask_IJ = (stacked_XY >= line[0]) & (stacked_XY <= line[1])
+    mask_IJ = np.logical_and(mask_IJ[:, 0], mask_IJ[:, 1])
+    #        mask_IJ = (X_I >= line[0]) & (X_I <= line[1]) & (Y_I >= line[0]) & (Y_I <= line[1])
+
+    mls_approx_novel_masked = mls_approx_novel_all[mask_IJ]
+    mls_approx_combined_masked = mls_approx_combined[mask_IJ]
+
+    # error_plus = Error.calculate_error(mls_approx_novel_masked, Z_truth_I[mask_I])
+    # error_combined = Error.calculate_error(mls_approx_combined_masked, Z_truth_I[mask_I])
+
+    mls_plus.error = Error.calculate_error(mls_approx_novel_masked, stacked_Z[mask_IJ])
+    mls_union.error = Error.calculate_error(mls_approx_combined_masked, stacked_Z[mask_IJ])
+
+    mls_i = MLSResult()
+    mls_i.time = 0
+    mls_i.error = Error(0, 0, 0, 0)
+
+    experiment = Experiment()
+    experiment.result_i = mls_i
+    experiment.result_plus = mls_plus
+    experiment.result_union = mls_union
+    experiment.base_function = base_function
+    experiment.m = m
+    experiment.n = n
+    experiment.delta = delta
+    return experiment
+
+    # mask_I_linear = (X_I >= line[0]) & (X_I <= line[1]) & (Y_I >= line[0]) & (Y_I <= line[1])
+    #
+    # mls_approx_novel_all_2 = mls_approx_novel_all[:(setting.n ** 2)].reshape(setting.n, setting.n)
+    # mls_approx_novel_masked_2 = mls_approx_novel_all_2[mask_I_linear]
+    # mls_approx_combined_2 = mls_approx_combined[:(setting.n ** 2)].reshape(setting.n, setting.n)
+    # mls_approx_combined_masked_2 = mls_approx_combined_2[mask_I_linear]
+    #
+    # error_plus = Error.calculate_error(mls_approx_novel_masked_2, Z_truth_I[mask_I_linear])
+    # error_combined = Error.calculate_error(mls_approx_combined_masked_2, Z_truth_I[mask_I_linear])
+    # print(setting)
+    # print(error_plus)
+    # print(error_combined)
+    # print()
 
 
 def error_diff_main():
@@ -369,6 +344,9 @@ def run_experiment(n, m, delta, tries, base_function, func):
         for i in range(tries):
             if func == 'basic_experiment':
                 aggregated_experiment.add(basic_experiment(n=n, m=m, delta=delta, base_function=base_function))
+            elif func == 'hetero_experiment':
+                aggregated_experiment.add(hetero_experiment(n=n, m=m, delta=delta, base_function=base_function))
+
     print(f"Experiment took: {timer.elapsed_time}")
     mls_i_time, mls_plus_time, mls_union_time = aggregated_experiment.get_times()
     print(f"mls_i / mls_plus / mls_union : {mls_i_time, mls_plus_time, mls_union_time}")
@@ -384,36 +362,38 @@ def run_all_experiments():
 
     tasks = []
     res_list = ExperimentStore()
-    for base_function in ['sine', 'exp']:
+
+    experiment = 'hetero_experiment'
+
+    for base_function in ['sine']:
         for m in [0, 1, 2]:
             for n in [45, 50, 55, 60, 65]:
                 for delta in [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1., 1.1, 1.2]:
-                    # res_list.add_experiment(run_experiment(n, m, delta, tries, base_function, 'basic_experiment'))
-                    tasks.append((n, m, delta, tries, base_function, 'basic_experiment'))
+                    # res_list.add_experiment(run_experiment(n, m, delta, tries, base_function, experiment))
+                    tasks.append((n, m, delta, tries, base_function, experiment))
 
-    with ProcessPoolExecutor(max_workers=4) as executor:
+    with ProcessPoolExecutor(max_workers=32) as executor:
         futures = [executor.submit(run_experiment, *arg) for arg in tasks]
 
         for future in tqdm(as_completed(futures), total=len(futures), desc='Processing'):
             res_list.add_experiment(future.result())
 
-    error_averages = res_list.get_error_df(error='rmse')
-    error_averages.to_csv('experiments-halton.csv')
+    error_averages = res_list.get_error_df(errors=['rmse', 'score'])
+    error_averages.to_csv(f'experiment-{experiment}.csv')
     print("mls_i, mls_plus, mls_union: \n", error_averages)
 
 
 if __name__ == "__main__":
-    print("Program begin")
-    # error_diff_main()
-    # error_diff_main()
-    exp = basic_experiment(m=1, n=40, delta=0.4, base_function='sine', plot=True)
-    print(exp.result_i)
-    print(exp.result_plus)
+    # print("Program begin")
+    # # error_diff_main()
+    # # error_diff_main()
+    # # exp = basic_experiment(m=1, n=40, delta=0.4, base_function='sine', plot=True)
+    # # print(exp.result_i)
+    # # print(exp.result_plus)
 
-    start = time.time()
-    # run_all_experiments()
-    end = time.time()
-    print(f"Time took total: {end - start}s")
+    with Timer(verbose=False) as timer:
+        run_all_experiments()
+    # print(f"Time took total: {timer.elapsed_time}s")
 
     # n = 50
     #
@@ -448,3 +428,4 @@ if __name__ == "__main__":
     # ax.set_ylabel('Y')
     # ax.set_zlabel('Z')
     # plt.show(block=True)
+    pass

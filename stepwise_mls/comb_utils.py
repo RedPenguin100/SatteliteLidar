@@ -1,6 +1,6 @@
-from numba import njit
-
 import numpy as np
+
+from numba import njit
 
 
 @njit
@@ -98,7 +98,6 @@ def my_polynomial_features(arr: np.array, m: int) -> np.array:
 
     result = np.ones((arr.shape[0], 1 + len(compositions)), dtype=np.float64)
     for r, row in enumerate(arr):
-
         for i, composition in enumerate(compositions):
             for j, pow in enumerate(composition):
                 result[r, 1 + i] *= row[j] ** pow

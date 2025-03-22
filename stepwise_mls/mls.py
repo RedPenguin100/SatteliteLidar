@@ -4,7 +4,7 @@ from numba import njit
 from stepwise_mls.comb_utils import my_polynomial_features
 
 
-@njit
+@njit(cache=True)
 def quick_linalg_norm_axis_minus_1(a: np.array):
     r = a.shape[0]
     res = np.empty(r)
@@ -13,14 +13,14 @@ def quick_linalg_norm_axis_minus_1(a: np.array):
     return res
 
 
-@njit
+@njit(cache=True)
 def gaussian_weights(x, x_i, h):
     norm = np.linalg.norm(x - x_i)
     pow = -np.power(norm / h, 2)
     return np.exp(pow)
 
 
-@njit
+@njit(cache=True)
 def gaussian_weights_vec(xs: np.array, x_i: float, h: float):
     if len(xs.shape) == 1:
         xs = np.atleast_2d(xs).T
@@ -35,7 +35,7 @@ def gaussian_weights_vec(xs: np.array, x_i: float, h: float):
     return np.exp(-norm_sq / (h ** 2))
 
 
-@njit
+@njit(cache=True)
 def calc_s(xs: np.array, x: float, y: np.array, h):
     s = 0.
 
@@ -52,11 +52,11 @@ def calc_s(xs: np.array, x: float, y: np.array, h):
 
 
 """
-Find all values in x_vec \in (x_val-delta, x_val+delta), quickly
+Find all values in x_vec in (x_val-delta, x_val+delta), quickly
 """
 
 
-@njit
+@njit(cache=True)
 def find_close_fast(x_vec, x_val, delta):
     # If x_vec is 1D, treat it as a single row (and x_val is assumed to be scalar)
     if x_vec.ndim == 1:
@@ -95,12 +95,14 @@ def find_close_fast(x_vec, x_val, delta):
                 diff = x_vec[i, j] - x_val[j]
                 s += diff * diff
             if s < delta_sqr:
+                if len(l) == 0:
+                    next_hint = i
                 l.append(i)
 
         return np.array(l)
 
 
-@njit
+@njit(cache=True)
 def shepard_kernel(x, y, delta, x_eval=None):
     if x_eval is None:
         x_eval = x
@@ -118,7 +120,7 @@ def shepard_kernel(x, y, delta, x_eval=None):
     return kernel
 
 
-@njit
+@njit(cache=True)
 def mls_matrices_multiply(ys, weights, P):
     return (ys.T * weights) @ P @ np.linalg.inv((P.T * weights) @ P)
 
@@ -158,7 +160,7 @@ def moving_least_squares_old(all_xs: np.array, all_ys: np.array, m=0, delta: flo
     return kernel
 
 
-@njit
+@njit(cache=True)
 def moving_least_squares(all_xs: np.array, all_ys: np.array, m=0, delta: float = 1,
                          x_eval: np.array = None) -> np.array:
     if len(all_xs.shape) == 1:
@@ -192,3 +194,63 @@ def moving_least_squares(all_xs: np.array, all_ys: np.array, m=0, delta: float =
         kernel[z] = value
 
     return kernel
+
+
+@njit(cache=True)
+def mls_novel(XY_I, Z_I, XY_J, Z_J, m, delta):
+    I_approx_at_I = moving_least_squares(XY_I, Z_I.ravel(), m=m, delta=delta, x_eval=XY_I)
+
+    I_approx_at_J = moving_least_squares(XY_I, Z_I.ravel(), m=m, delta=delta, x_eval=XY_J)
+    e_at_J = I_approx_at_J - Z_J.ravel()
+    MLS_approx_at_error = moving_least_squares(XY_J, e_at_J, m=m, delta=delta, x_eval=XY_I)
+
+    return I_approx_at_I - MLS_approx_at_error
+
+
+@njit(cache=True)
+def mls_novel_all(XY_I, Z_I, XY_J, Z_J, m, delta):
+    stacked_XY = np.vstack((XY_I, XY_J))
+
+    I_approx_at_IJ = moving_least_squares(XY_I, Z_I.ravel(), m=m, delta=delta, x_eval=stacked_XY)
+
+    e_at_J = I_approx_at_IJ[len(XY_I):] - Z_J.ravel()
+
+    MLS_approx_at_error = moving_least_squares(XY_J, e_at_J, m=m, delta=delta, x_eval=stacked_XY)
+
+    return I_approx_at_IJ - MLS_approx_at_error
+
+
+@njit(cache=True)
+def mls_novel_all_3(XY_I, Z_I, XY_J, Z_J, XY_K, Z_K, m, delta):
+    stacked_XY = np.vstack((XY_I, XY_J))
+    super_stacked = np.vstack((stacked_XY, XY_K))
+
+    I_approx_at_IJ = moving_least_squares(XY_I, Z_I.ravel(), m=m, delta=delta, x_eval=super_stacked)
+
+    e_at_J = I_approx_at_IJ[len(XY_I):len(XY_I) + len(XY_J)] - Z_J.ravel()
+
+    MLS_approx_at_error = moving_least_squares(XY_J, e_at_J, m=m, delta=delta, x_eval=super_stacked)
+
+    IJ_approx = I_approx_at_IJ - MLS_approx_at_error
+    #################
+
+    approx_K = moving_least_squares(stacked_XY, IJ_approx, m=m, delta=delta, x_eval=XY_K)
+    e_at_K = approx_K - Z_K.ravel()
+
+    MLS_approx_at_error_K = moving_least_squares(XY_K, e_at_K, m=m, delta=delta, x_eval=super_stacked)
+
+    return IJ_approx - MLS_approx_at_error_K
+
+
+# @njit(cache=True)
+def mls_combined(XY_I, Z_I, XY_J, Z_J, m, delta):
+    stacked_XY = np.vstack((XY_I, XY_J))
+    stacked_Z = np.vstack((Z_I, Z_J)).ravel()
+    IJ_approx_at_I = moving_least_squares(stacked_XY, stacked_Z, m=m, delta=delta, x_eval=XY_I)
+    return IJ_approx_at_I
+
+
+@njit(cache=True)
+def mls_combined_all(stacked_XY, stacked_Z, m, delta):
+    IJ_approx_at_IJ = moving_least_squares(stacked_XY, stacked_Z, m=m, delta=delta, x_eval=stacked_XY)
+    return IJ_approx_at_IJ

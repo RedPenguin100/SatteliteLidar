@@ -2,6 +2,7 @@ import numpy as np
 from typing import Self
 
 
+# FIXXXXXXXXXXXXXXXXXXX THIS IS NOT ABSOLUTE
 # Going to assume they mean absolute as well
 def mean_error(actual: np.array, predicted: np.array):
     return np.mean(actual - predicted)
