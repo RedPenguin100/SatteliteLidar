@@ -3,6 +3,7 @@ name: mls_fixed
 channels:
   - defaults
 dependencies:
+  - conda-build=25.1.2
   - numpy<2
   - numba=0.61
   - pytest
