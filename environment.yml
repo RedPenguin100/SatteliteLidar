@@ -1,9 +1,8 @@
 name: mls_fixed
-
 channels:
-  - defaults
   - conda-forge
 dependencies:
+  - python=3.12
   - conda-build=25.1.2
   - numpy<2
   - numba=0.61
@@ -12,3 +11,9 @@ dependencies:
   - scikit-learn=1.6.1
   - pandas=2.2.3
   - matplotlib=3.10.1
+  - pip            # must list pip so conda installs it
+  - pip:
+    - jax==0.6.2
+    - jaxlib==0.6.2
+    - jax_cuda12_plugin==0.6.2
+    - jax-finufft

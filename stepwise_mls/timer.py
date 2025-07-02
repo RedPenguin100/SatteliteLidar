@@ -14,4 +14,7 @@ class Timer:
         self.end_time = time.time()
         self.elapsed_time = self.end_time - self.start_time
         if self.verbose:
-            print(f'Elapsed time: {self.elapsed_time: .4f} seconds')
+            self.tell_time()
+
+    def tell_time(self):
+        print(f'Elapsed time: {self.elapsed_time: .4f} seconds')
