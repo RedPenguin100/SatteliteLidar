@@ -13,7 +13,4 @@ dependencies:
   - matplotlib=3.10.1
   - pip            # must list pip so conda installs it
   - pip:
-    - jax==0.6.2
-    - jaxlib==0.6.2
-    - jax_cuda12_plugin==0.6.2
-    - jax-finufft
+    - finufft
