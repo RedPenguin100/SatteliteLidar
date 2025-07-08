@@ -26,6 +26,11 @@ def correlation(actual, predicted):
     denominator = np.sqrt(np.sum((actual - actual_mean) ** 2) * np.sum((predicted - predicted_mean) ** 2))
     return numerator / denominator
 
+def mse(actual: np.array, predicted: np.array):
+    actual = actual.ravel()
+    predicted = predicted.ravel()
+    return np.mean((actual - predicted) ** 2)
+
 # Root mean squared error
 def rmse(actual: np.array, predicted: np.array):
     actual = actual.ravel()
